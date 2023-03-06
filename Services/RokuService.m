@@ -31,6 +31,11 @@
 {
     DIALService *_dialService;
     DeviceServiceReachability *_serviceReachability;
+    NSString *_channelID;
+    MediaPositionSuccessBlock _durationSuccess;
+    FailureBlock _durationFailure;
+    MediaPositionSuccessBlock _positionSuccess;
+    FailureBlock _positionFailure;
 }
 @end
 
@@ -113,17 +118,34 @@ static NSMutableArray *registeredApps = nil;
     return YES;
 }
 
-- (void) connect
-{
-    NSString *targetPath = [NSString stringWithFormat:@"http://%@:%@/", self.serviceDescription.address, @(self.serviceDescription.port)];
-    NSURL *targetURL = [NSURL URLWithString:targetPath];
+- (void) connect {
+    
+    NSURL *targetURL = [self.serviceDescription.commandURL URLByAppendingPathComponent:@"launch"];
+    targetURL = [targetURL URLByAppendingPathComponent:[self channelID]];
 
-    _serviceReachability = [DeviceServiceReachability reachabilityWithTargetURL:targetURL];
+    ServiceCommand *command = [ServiceCommand commandWithDelegate:self target:targetURL payload:nil];
+    __weak RokuService *weakSelf = self;
+    command.callbackComplete = ^void(id responseObject) {
+        [weakSelf connectSuccess];
+    };
+    
+    command.callbackError = ^void(NSError *error) {
+        [weakSelf installChannelSuccess:^(id responseObject) {
+            [weakSelf connectSuccess];
+        } failure:^(NSError *error) {
+            [weakSelf disconnect];
+        }];
+    };
+    [command send];
+}
+
+- (void) connectSuccess {
+    _serviceReachability = [DeviceServiceReachability reachabilityWithTargetURL:self.serviceDescription.commandURL];
     _serviceReachability.delegate = self;
     [_serviceReachability start];
-
+    
     self.connected = YES;
-
+    
     if (self.delegate && [self.delegate respondsToSelector:@selector(deviceServiceConnectionSuccess:)])
         dispatch_on_main(^{ [self.delegate deviceServiceConnectionSuccess:self]; });
 }
@@ -180,11 +202,32 @@ static NSMutableArray *registeredApps = nil;
     return _dialService;
 }
 
+- (void)installChannelSuccess:(SuccessBlock)success failure:(FailureBlock)failure {
+    NSURL *targetURL = [self.serviceDescription.commandURL URLByAppendingPathComponent:@"install"];
+    targetURL = [targetURL URLByAppendingPathComponent:[self channelID]];
+    ServiceCommand *command = [ServiceCommand commandWithDelegate:self target:targetURL payload:nil];
+    command.callbackComplete = success;
+    command.callbackError = failure;
+    [command send];
+}
+
 #pragma mark - Getters & Setters
 
 /// Returns the set delegate property value or self.
 - (id<ServiceCommandDelegate>)serviceCommandDelegate {
     return _serviceCommandDelegate ?: self;
+}
+
+- (NSString *)channelID {
+    if (_channelID == nil) {
+#if DEBUG
+        _channelID = @"dev";
+#else
+        _channelID = @"";
+#endif
+    }
+    
+    return  _channelID;
 }
 
 #pragma mark - ServiceCommandDelegate
@@ -440,6 +483,94 @@ static NSMutableArray *registeredApps = nil;
     [command send];
 }
 
+- (void)getPlayerInfo:(void(^)(MediaControlPlayState playState, NSTimeInterval position, NSTimeInterval duration))success failure:(FailureBlock)failure {
+    NSURL *targetURL = [self.serviceDescription.commandURL URLByAppendingPathComponent:@"query"];
+    targetURL = [targetURL URLByAppendingPathComponent:@"media-player"];
+    
+    ServiceCommand *command = [ServiceCommand commandWithDelegate:self.serviceCommandDelegate target:targetURL payload:nil];
+    command.HTTPMethod = @"GET";
+    command.callbackComplete = ^(NSString *responseObject)
+    {
+        NSError *xmlError;
+        NSDictionary *responseDictionary = [CTXMLReader dictionaryForXMLString:responseObject error:&xmlError];
+        id player = [responseDictionary valueForKey:@"player"];
+        
+        if (xmlError) {
+            failure(xmlError);
+        } else {
+            if ([player isKindOfClass:[NSDictionary class]]) {
+                NSDictionary *playerInfoDictionary = (NSDictionary *)player;
+                MediaControlPlayState playState = [self parsePlayerStateWithPlayerDictionary:playerInfoDictionary];
+                NSDictionary *durationDict = playerInfoDictionary[@"duration"];
+                NSTimeInterval duration = [self parseIntervalWithTextDictionary:durationDict];
+                NSDictionary *positionDict = playerInfoDictionary[@"position"];
+                NSTimeInterval position = [self parseIntervalWithTextDictionary:positionDict];
+                if (duration > 0) {
+                    playState = (NSInteger)position < (NSInteger)duration ? playState : MediaControlPlayStateFinished;
+                }
+                success(playState, position, duration);
+            } else {
+                NSString *details = [NSString stringWithFormat:
+                    @"Couldn't parse player XML (%@)", responseDictionary];
+                failure([ConnectError generateErrorWithCode:ConnectStatusCodeTvError
+                                                 andDetails:details]);
+            }
+        }
+    };
+    command.callbackError = failure;
+    [command send];
+}
+
+- (MediaControlPlayState)parsePlayerStateWithPlayerDictionary:(NSDictionary *)playerDict {
+    NSString *state = playerDict[@"state"];
+    NSLog(@"roku player state: %@", state);
+    MediaControlPlayState playState = MediaControlPlayStateUnknown;
+    if (state!= nil) {
+        if (@available(iOS 8.0, *)) {
+            if ([state containsString:@"buffer"]) {
+                playState = MediaControlPlayStateBuffering;
+            } else if ([state containsString:@"play"]) {
+                playState = MediaControlPlayStatePlaying;
+            } else if ([state containsString:@"pause"]) {
+                playState = MediaControlPlayStatePaused;
+            } else if ([state containsString:@"stop"]) {
+                playState = MediaControlPlayStateIdle;
+            } else if ([state containsString:@"finish"]) {
+                playState = MediaControlPlayStateFinished;
+            } else {
+                playState = MediaControlPlayStateUnknown;
+            }
+        }
+    } else {
+        playState = MediaControlPlayStateUnknown;
+    }
+    return playState;
+}
+
+- (NSTimeInterval)parseIntervalWithTextDictionary:(NSDictionary *)txtDict {
+    
+    NSTimeInterval(^txtProcessor)(NSString *) = ^NSTimeInterval(NSString *txt) {
+        
+        if ([txt isKindOfClass:[NSString class]]) {
+            NSRange replaceRange = [txt rangeOfString:@"ms"];
+            if (replaceRange.location != NSNotFound){
+                NSString *result = [txt stringByReplacingCharactersInRange:replaceRange withString:@""];
+                NSString *trimmedString = [result stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+                NSTimeInterval i = [trimmedString doubleValue];
+                return i / 1000;
+            } else {
+                return [txt doubleValue] / 1000;
+            }
+        } else {
+            return 0;
+        }
+        
+    };
+    
+    NSTimeInterval interval = txtProcessor(txtDict[@"text"]);
+    return interval;
+}
+
 - (void)getAppState:(LaunchSession *)launchSession success:(AppStateSuccessBlock)success failure:(FailureBlock)failure
 {
     [self sendNotSupportedFailure:failure];
@@ -509,7 +640,8 @@ static NSMutableArray *registeredApps = nil;
         return;
     }
     
-    NSString *applicationPath = [NSString stringWithFormat:@"15985?t=p&u=%@&tr=crossfade",
+    NSString *applicationPath = [NSString stringWithFormat:@"%@?t=p&url=%@&tr=crossfade&mediaType=image",
+                                 [self channelID],
                                  [ConnectUtil urlEncode:imageURL.absoluteString] // content path
                                  ];
     
@@ -525,7 +657,7 @@ static NSMutableArray *registeredApps = nil;
     command.HTTPMethod = @"POST";
     command.callbackComplete = ^(id responseObject)
     {
-        LaunchSession *launchSession = [LaunchSession launchSessionForAppId:@"15985"];
+        LaunchSession *launchSession = [LaunchSession launchSessionForAppId:[self channelID]];
         launchSession.name = @"simplevideoplayer";
         launchSession.sessionType = LaunchSessionTypeMedia;
         launchSession.service = self;
@@ -588,14 +720,16 @@ static NSMutableArray *registeredApps = nil;
     
     if (isVideo)
     {
-        applicationPath = [NSString stringWithFormat:@"15985?t=v&u=%@&k=(null)&videoName=%@&videoFormat=%@",
+        applicationPath = [NSString stringWithFormat:@"%@?t=v&url=%@&k=(null)&videoName=%@&videoFormat=%@&mediaType=video",
+                           [self channelID],
                            [ConnectUtil urlEncode:mediaURL.absoluteString], // content path
                            title ? [ConnectUtil urlEncode:title] : @"(null)", // video name
                            ensureString(mediaType) // video format
                            ];
     } else
     {
-        applicationPath = [NSString stringWithFormat:@"15985?t=a&u=%@&k=(null)&songname=%@&artistname=%@&songformat=%@&albumarturl=%@",
+        applicationPath = [NSString stringWithFormat:@"%@?t=a&url=%@&k=(null)&songname=%@&artistname=%@&songformat=%@&albumarturl=%@&mediaType=audio",
+                           [self channelID],
                            [ConnectUtil urlEncode:mediaURL.absoluteString], // content path
                            title ? [ConnectUtil urlEncode:title] : @"(null)", // song name
                            description ? [ConnectUtil urlEncode:description] : @"(null)", // artist name
@@ -616,7 +750,7 @@ static NSMutableArray *registeredApps = nil;
     command.HTTPMethod = @"POST";
     command.callbackComplete = ^(id responseObject)
     {
-        LaunchSession *launchSession = [LaunchSession launchSessionForAppId:@"15985"];
+        LaunchSession *launchSession = [LaunchSession launchSessionForAppId:[self channelID]];
         launchSession.name = @"simplevideoplayer";
         launchSession.sessionType = LaunchSessionTypeMedia;
         launchSession.service = self;
@@ -679,7 +813,18 @@ static NSMutableArray *registeredApps = nil;
 
 - (void)getPlayStateWithSuccess:(MediaPlayStateSuccessBlock)success failure:(FailureBlock)failure
 {
-    [self sendNotSupportedFailure:failure];
+    __weak RokuService *weakSelf = self;
+    [self getPlayerInfo:^(MediaControlPlayState playState, NSTimeInterval position, NSTimeInterval duration) {
+        RokuService *strongSelf = weakSelf;
+        success(playState);
+        strongSelf->_durationSuccess(duration);
+        strongSelf->_positionSuccess(position);
+    } failure:^(NSError *error) {
+        RokuService *strongSelf = weakSelf;
+        failure(error);
+        strongSelf->_durationFailure(error);
+        strongSelf->_positionFailure(error);
+    }];
 }
 
 - (ServiceSubscription *)subscribePlayStateWithSuccess:(MediaPlayStateSuccessBlock)success failure:(FailureBlock)failure
@@ -689,12 +834,13 @@ static NSMutableArray *registeredApps = nil;
 
 - (void)getDurationWithSuccess:(MediaPositionSuccessBlock)success
                        failure:(FailureBlock)failure {
-    [self sendNotSupportedFailure:failure];
+    _durationSuccess = success;
+    _durationFailure = failure;
 }
 
-- (void)getPositionWithSuccess:(MediaPositionSuccessBlock)success failure:(FailureBlock)failure
-{
-    [self sendNotSupportedFailure:failure];
+- (void)getPositionWithSuccess:(MediaPositionSuccessBlock)success failure:(FailureBlock)failure {
+    _positionSuccess = success;
+    _positionFailure = failure;
 }
 
 - (void)getMediaMetaDataWithSuccess:(SuccessBlock)success
