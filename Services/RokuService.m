@@ -223,7 +223,7 @@ static NSMutableArray *registeredApps = nil;
 #if DEBUG
         _channelID = @"dev";
 #else
-        _channelID = @"";
+        _channelID = @"dev";
 #endif
     }
     
