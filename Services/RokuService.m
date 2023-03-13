@@ -806,9 +806,21 @@ static NSMutableArray *registeredApps = nil;
     [self sendKeyCode:RokuKeyCodeFastForward success:success failure:failure];
 }
 
-- (void)seek:(NSTimeInterval)position success:(SuccessBlock)success failure:(FailureBlock)failure
-{
-    [self sendNotSupportedFailure:failure];
+- (void)seek:(NSTimeInterval)position success:(SuccessBlock)success failure:(FailureBlock)failure {
+    NSString *applicationPath = [NSString stringWithFormat:@"input?cmd=seek&seekto=%f", position];
+    
+    NSString *commandPath = [NSString pathWithComponents:@[
+                                                           self.serviceDescription.commandURL.absoluteString,
+                                                           applicationPath
+                                                           ]];
+    
+    NSURL *targetURL = [NSURL URLWithString:commandPath];
+    
+    ServiceCommand *command = [ServiceCommand commandWithDelegate:self.serviceCommandDelegate target:targetURL payload:nil];
+    command.HTTPMethod = @"POST";
+    command.callbackComplete = success;
+    command.callbackError = failure;
+    [command send];
 }
 
 - (void)getPlayStateWithSuccess:(MediaPlayStateSuccessBlock)success failure:(FailureBlock)failure
