@@ -220,11 +220,7 @@ static NSMutableArray *registeredApps = nil;
 
 - (NSString *)channelID {
     if (_channelID == nil) {
-#if DEBUG
-        _channelID = @"dev";
-#else
-        _channelID = @"dev";
-#endif
+        _channelID = @"703629";
     }
     
     return  _channelID;
