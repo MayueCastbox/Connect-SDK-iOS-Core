@@ -126,6 +126,10 @@ static double searchAttemptsBeforeKill = 6.0;
     }
 }
 
+- (BOOL)isEmpty {
+    return _serviceFilters.count <= 0;
+}
+
 #pragma mark - Device filter management
 
 - (void)addDeviceFilter:(NSDictionary *)parameters
