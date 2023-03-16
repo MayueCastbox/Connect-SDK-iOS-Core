@@ -219,7 +219,7 @@
     if (discoveryProvider == nil)
         return;
     
-    NSDictionary *discoveryParameters = [discoveryClass discoveryParameters];
+    NSDictionary *discoveryParameters = [deviceClass discoveryParameters];
     
     NSString *serviceId = [discoveryParameters objectForKey:@"serviceId"];
 
