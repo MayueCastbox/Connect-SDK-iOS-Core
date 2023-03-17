@@ -40,6 +40,9 @@
 @end
 
 static NSMutableArray *registeredApps = nil;
+static NSError *_rokuChannelNeedToInstallError = nil;
+NSString *const channelNeedToInstallErrorDomain = @"connectsdk.rokuservice.channel.need.to.install";
+const NSInteger channelNeedToInstallErrorCode = NSIntegerMin;
 
 @implementation RokuService
 
@@ -60,6 +63,15 @@ static NSMutableArray *registeredApps = nil;
                     @"filter" : @"roku:ecp"
             }
     };
+}
+
++ (NSError *)channelNeedToInstallError {
+    
+    if (_rokuChannelNeedToInstallError == nil) {
+        _rokuChannelNeedToInstallError = [NSError errorWithDomain:channelNeedToInstallErrorDomain code:channelNeedToInstallErrorCode userInfo:nil];
+    }
+    
+    return _rokuChannelNeedToInstallError;
 }
 
 - (void) updateCapabilities
@@ -131,9 +143,9 @@ static NSMutableArray *registeredApps = nil;
     
     command.callbackError = ^void(NSError *error) {
         [weakSelf installChannelSuccess:^(id responseObject) {
-            [weakSelf connectSuccess];
+            [weakSelf disconnectWithError: [RokuService channelNeedToInstallError]];
         } failure:^(NSError *error) {
-            [weakSelf disconnect];
+            [weakSelf disconnectWithError:error];
         }];
     };
     [command send];
@@ -148,6 +160,15 @@ static NSMutableArray *registeredApps = nil;
     
     if (self.delegate && [self.delegate respondsToSelector:@selector(deviceServiceConnectionSuccess:)])
         dispatch_on_main(^{ [self.delegate deviceServiceConnectionSuccess:self]; });
+}
+
+- (void) disconnectWithError:(NSError *)error {
+    self.connected = NO;
+
+    [_serviceReachability stop];
+
+    if (self.delegate && [self.delegate respondsToSelector:@selector(deviceService:disconnectedWithError:)])
+        dispatch_on_main(^{ [self.delegate deviceService:self disconnectedWithError:error]; });
 }
 
 - (void) disconnect

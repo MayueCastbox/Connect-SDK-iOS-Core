@@ -60,4 +60,6 @@ typedef NSUInteger RokuKeyCode;
 
 + (void) registerApp:(NSString *)appId;
 
++ (nonnull NSError *)channelNeedToInstallError;
+
 @end
