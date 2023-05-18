@@ -173,6 +173,11 @@ const NSInteger channelNeedToInstallErrorCode = NSIntegerMin;
 
 - (void) disconnect
 {
+    [self sendKeyCode:RokuKeyCodeHome success:^(id responseObject) {
+        
+    } failure:^(NSError *error) {
+        
+    }];
     self.connected = NO;
 
     [_serviceReachability stop];
